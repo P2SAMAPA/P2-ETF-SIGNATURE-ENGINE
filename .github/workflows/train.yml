@@ -62,7 +62,8 @@ jobs:
       - name: Install dependencies
         if: steps.check.outputs.should_run == 'true'
         run: |
-          pip install numpy setuptools wheel
+          # Pin numpy to 1.x for iisignature compatibility
+          pip install "numpy<2.0" setuptools wheel
           pip install --no-build-isolation iisignature==0.24
           pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
 
@@ -118,7 +119,6 @@ jobs:
           import datetime
           from huggingface_hub import HfApi
           
-          # Load separate signals
           merged = {}
           
           try:
@@ -139,11 +139,9 @@ jobs:
           
           merged["generated_at"] = datetime.datetime.utcnow().isoformat()
           
-          # Save locally
           with open('signature_signal.json', 'w') as f:
               json.dump(merged, f, indent=2, default=str)
           
-          # Upload to HF
           api = HfApi(token=os.environ["HF_TOKEN"])
           api.upload_file(
               path_or_fileobj='signature_signal.json',
