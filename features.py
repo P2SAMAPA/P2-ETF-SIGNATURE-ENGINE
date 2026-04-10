@@ -1,66 +1,66 @@
 """
-P2-ETF-SIGNATURE-ENGINE  ·  features.py
-Build the rolling-window signature feature matrix.
-
-For each trading day t, use the window [t-lookback : t] of returns + macro
-to construct an augmented path, compute its truncated signature, and store
-the result as one row of the feature matrix X.
-
-The target y for day t is the log return of each ETF on day t+1
-(next-day return — what we are trying to predict).
+P2-ETF-SIGNATURE-ENGINE · features.py
+Build the rolling-window signature feature matrix with caching.
 """
 
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from functools import lru_cache
+import hashlib
 
 from path_builder import build_path
-from signature    import compute_signature
+from signature import compute_signature
 
+# Global cache for signature computations
+_signature_cache = {}
+
+def _get_cache_key(ret_win, mac_win, depth):
+    """Generate cache key from window data and depth."""
+    # Use hash of concatenated data + depth
+    ret_hash = hashlib.md5(ret_win.values.tobytes()).hexdigest()[:16]
+    mac_hash = hashlib.md5(mac_win.values.tobytes()).hexdigest()[:16]
+    return f"{ret_hash}_{mac_hash}_{depth}"
 
 def build_feature_matrix(returns_df: pd.DataFrame,
-                          macro_df: pd.DataFrame,
-                          lookback: int,
-                          depth: int,
-                          verbose: bool = False) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
+                         macro_df: pd.DataFrame,
+                         lookback: int,
+                         depth: int,
+                         verbose: bool = False,
+                         use_cache: bool = True) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
     """
-    Build signature feature matrix X and target matrix y.
-
-    Parameters
-    ----------
-    returns_df : pd.DataFrame  shape (T, n_etfs)  daily log returns
-    macro_df   : pd.DataFrame  shape (T, n_macro)  macro features
-    lookback   : int           rolling window length in trading days
-    depth      : int           signature truncation depth
-
-    Returns
-    -------
-    X     : np.ndarray  shape (N, sig_dim)   signature features
-    y     : np.ndarray  shape (N, n_etfs)    next-day log returns (targets)
-    dates : pd.DatetimeIndex                 prediction dates (day t+1)
+    Build signature feature matrix X and target matrix y with caching.
     """
-    T       = len(returns_df)
-    n_etfs  = returns_df.shape[1]
-    rows_X  = []
-    rows_y  = []
-    dates   = []
+    T = len(returns_df)
+    n_etfs = returns_df.shape[1]
+    rows_X = []
+    rows_y = []
+    dates = []
 
     iterator = range(lookback, T - 1)
     if verbose:
-        iterator = tqdm(iterator, desc=f"  Building signatures (lb={lookback}, d={depth})")
+        iterator = tqdm(iterator, desc=f" Building signatures (lb={lookback}, d={depth})")
 
     for t in iterator:
-        ret_win   = returns_df.iloc[t - lookback: t]
-        mac_win   = macro_df.iloc[t - lookback: t]
+        ret_win = returns_df.iloc[t - lookback: t]
+        mac_win = macro_df.iloc[t - lookback: t]
+        mac_win = mac_win.reindex(ret_win.index, method="ffill").fillna(0.0)
 
-        # Align macro to return index (macro may have fewer rows after dropna)
-        mac_win   = mac_win.reindex(ret_win.index, method="ffill").fillna(0.0)
+        # Check cache
+        if use_cache:
+            cache_key = _get_cache_key(ret_win, mac_win, depth)
+            if cache_key in _signature_cache:
+                sig = _signature_cache[cache_key]
+            else:
+                path = build_path(ret_win, mac_win)
+                sig = compute_signature(path, depth)
+                _signature_cache[cache_key] = sig
+        else:
+            path = build_path(ret_win, mac_win)
+            sig = compute_signature(path, depth)
 
-        path      = build_path(ret_win, mac_win)
-        sig       = compute_signature(path, depth)
-
-        next_ret  = returns_df.iloc[t + 1].values   # shape (n_etfs,)
+        next_ret = returns_df.iloc[t + 1].values
         next_date = returns_df.index[t + 1]
 
         rows_X.append(sig)
@@ -75,21 +75,20 @@ def build_feature_matrix(returns_df: pd.DataFrame,
 
     return X, y, pd.DatetimeIndex(dates)
 
-
 def build_live_feature(returns_df: pd.DataFrame,
                        macro_df: pd.DataFrame,
                        lookback: int,
                        depth: int) -> np.ndarray:
     """
-    Build a single signature feature vector from the most recent
-    `lookback` days — used for live next-day prediction.
-
-    Returns
-    -------
-    np.ndarray  shape (1, sig_dim)
+    Build a single signature feature vector from the most recent lookback days.
     """
     ret_win = returns_df.iloc[-lookback:]
     mac_win = macro_df.reindex(ret_win.index, method="ffill").fillna(0.0)
-    path    = build_path(ret_win, mac_win)
-    sig     = compute_signature(path, depth)
+    path = build_path(ret_win, mac_win)
+    sig = compute_signature(path, depth)
     return sig.reshape(1, -1)
+
+def clear_signature_cache():
+    """Clear the signature cache to free memory."""
+    global _signature_cache
+    _signature_cache = {}
