@@ -37,7 +37,10 @@ jobs:
             ${{ runner.os }}-pip-sig-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install numpy setuptools wheel
+          pip install --no-build-isolation iisignature==0.24
+          pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
 
       - name: Train FI module
         env:
@@ -70,7 +73,10 @@ jobs:
             ${{ runner.os }}-pip-sig-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install numpy setuptools wheel
+          pip install --no-build-isolation iisignature==0.24
+          pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
 
       - name: Train Equity module
         env:
