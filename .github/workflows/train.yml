@@ -2,7 +2,6 @@ name: Daily Signature Training
 
 on:
   schedule:
-    # 23:00 UTC Mon-Fri (after data update at 22:00)
     - cron: "0 23 * * 1-5"
   workflow_dispatch:
     inputs:
@@ -12,12 +11,23 @@ on:
         default: "both"
 
 jobs:
-  train-fi:
-    name: Train FI / Commodities
+  train:
+    name: Train ${{ matrix.module }} Module
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: fi
+            script: train_fi
+            output: fi_signal.json
+          - module: equity
+            script: train_equity
+            output: equity_signal.json
+    
     if: |
       github.event_name == 'schedule' ||
-      github.event.inputs.module == 'fi' ||
+      github.event.inputs.module == matrix.module ||
       github.event.inputs.module == 'both'
 
     steps:
@@ -42,20 +52,25 @@ jobs:
           pip install --no-build-isolation iisignature==0.24
           pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
 
-      - name: Train FI module
+      - name: Train ${{ matrix.module }} module
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python train_fi.py
+          OUTPUT_JSON: ${{ matrix.output }}
+        run: python ${{ matrix.script }}.py
 
-  train-equity:
-    name: Train Equity Sectors
+      - name: Upload ${{ matrix.module }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 1
+
+  merge:
+    name: Merge Signals
     runs-on: ubuntu-latest
-    needs: train-fi
-    if: |
-      github.event_name == 'schedule' ||
-      github.event.inputs.module == 'eq' ||
-      github.event.inputs.module == 'both'
-
+    needs: train
+    if: always() && (needs.train.result == 'success' || needs.train.result == 'skipped')
+    
     steps:
       - uses: actions/checkout@v4
 
@@ -64,21 +79,56 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - name: Download FI artifact
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-sig-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-sig-
+          name: fi_signal.json
+          path: ./signals/
 
-      - name: Install dependencies
-        run: |
-          pip install numpy setuptools wheel
-          pip install --no-build-isolation iisignature==0.24
-          pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
+      - name: Download Equity artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: equity_signal.json
+          path: ./signals/
 
-      - name: Train Equity module
+      - name: Merge and upload
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python train_equity.py
+        run: |
+          pip install huggingface_hub
+          python << 'EOF'
+          import json
+          import os
+          import datetime
+          from huggingface_hub import HfApi
+          
+          # Load separate signals
+          with open('./signals/fi_signal.json') as f:
+              fi_data = json.load(f)
+          with open('./signals/equity_signal.json') as f:
+              eq_data = json.load(f)
+          
+          # Merge into final structure
+          merged = {
+              "FI_full": fi_data.get("FI_full"),
+              "FI_consensus": fi_data.get("FI_consensus"),
+              "EQ_full": eq_data.get("EQ_full"),
+              "EQ_consensus": eq_data.get("EQ_consensus"),
+              "generated_at": datetime.datetime.utcnow().isoformat()
+          }
+          
+          # Save locally
+          with open('signature_signal.json', 'w') as f:
+              json.dump(merged, f, indent=2, default=str)
+          
+          # Upload to HF
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          api.upload_file(
+              path_or_fileobj='signature_signal.json',
+              path_in_repo='results/signature_signal.json',
+              repo_id='P2SAMAPA/p2-etf-signature-engine-results',
+              repo_type='dataset'
+          )
+          print("Merged and uploaded successfully")
+          print(f"Keys: {list(merged.keys())}")
+          EOF
