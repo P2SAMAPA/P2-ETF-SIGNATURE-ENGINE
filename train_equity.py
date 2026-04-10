@@ -1,12 +1,6 @@
 """
 P2-ETF-SIGNATURE-ENGINE · train_equity.py
-Full training pipeline for Equity Sectors module.
-
-Option (a) Full dataset (2008-present, 80/10/10)
-Option (b) Expanding windows (7 start years, each 80/10/10, consensus)
-
-Both options use the same hyperparameters (lookback, depth, model_type)
-optimised once on the full-dataset validation set.
+Optimized training pipeline for Equity Sectors module with signature caching.
 """
 
 import os
@@ -23,7 +17,7 @@ from config import (
     EXPANDING_START_YEARS,
 )
 from loader import get_module_data
-from features import build_feature_matrix, build_live_feature
+from features import build_feature_matrix, build_live_feature, clear_signature_cache
 from model import train_model, predict, select_best_model
 from optimise import optimise_hyperparams
 from backtest import run_backtest
@@ -60,7 +54,7 @@ def run_equity():
     print(f"  Test       : {len(test_r)} ({test_r.index[0].date()} → {test_r.index[-1].date()})")
 
     # ── 2. Hyperparameter optimisation on full-dataset val set ─────
-    print("\n[2/8] Optimising hyperparameters on val set (18 combos)...")
+    print("\n[2/8] Optimising hyperparameters on val set...")
     hp = optimise_hyperparams(rets, macro, train_r, train_m, val_r, val_m, verbose=True)
     lb, depth, mt = hp["best_lookback"], hp["best_depth"], hp["best_model"]
     print(f"  Locked: lookback={lb} depth={depth} model={mt}")
@@ -106,14 +100,17 @@ def run_equity():
 
     print(f"  Full dataset pick : {signal_full['pick']} ({signal_full['conviction_pct']:.1f}%)")
 
-    # ── 6. Option (b): Expanding windows ─────────────────────────
+    # ── 6. Option (b): Expanding windows (with signature caching) ─
     print(f"\n[6/8] Option (b) — Expanding windows ({len(EXPANDING_START_YEARS)} windows)...")
+    print("  Note: Signatures are cached across overlapping windows for speed")
+    
     window_results = []
     window_metrics = []
 
     for start_yr in EXPANDING_START_YEARS:
         start_str = f"{start_yr}-01-01"
         print(f"\n  Window start: {start_str}")
+        
         try:
             wd = get_module_data("EQ", start_date=start_str)
         except Exception as e:
@@ -131,13 +128,14 @@ def run_equity():
             print(f"    Skipped: train too short ({len(wt_r)} rows).")
             continue
 
-        # Build features for this window
+        # Build features for this window (uses cache automatically)
         try:
-            Xwt, ywt, _ = build_feature_matrix(wt_r, wt_m, lb, depth)
+            Xwt, ywt, _ = build_feature_matrix(wt_r, wt_m, lb, depth, verbose=False)
             Xwv, ywv, _ = build_feature_matrix(
                 pd.concat([wt_r, wv_r]),
                 pd.concat([wt_m, wv_m]),
-                lb, depth
+                lb, depth,
+                verbose=False
             )
             wv_mask = slice(len(Xwt), None)
             Xwv_only, ywv_only = Xwv[wv_mask], ywv[wv_mask]
@@ -182,6 +180,9 @@ def run_equity():
         print(f"    OOS cum_ret={oos_cum:.4f} val_sharpe={val_sharpe:.3f} "
               f"→ {'included' if oos_cum > 0 else 'EXCLUDED (negative OOS)'}")
 
+    # Clear cache after all windows
+    clear_signature_cache()
+
     # ── 7. Consensus signal ────────────────────────────────────────
     print(f"\n[7/8] Option (b) — Building consensus signal...")
     prev_pick_cons = _load_prev_pick_from_hf(SIGNAL_HISTORY_EQ, col="pick_consensus")
@@ -209,8 +210,7 @@ def run_equity():
     _save_json(window_metrics, METRICS_WINDOWS_EQ)
 
     # Signal history: append today's picks
-    _append_history(signal_full["pick"], signal_cons["pick"],
-                    ntd, SIGNAL_HISTORY_EQ)
+    _append_history(signal_full["pick"], signal_cons["pick"], ntd, SIGNAL_HISTORY_EQ)
 
     upload_results([OUTPUT_JSON, METRICS_FULL_EQ, METRICS_WINDOWS_EQ, SIGNAL_HISTORY_EQ])
     print("\nDone — Equity module complete.")
@@ -218,22 +218,6 @@ def run_equity():
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _fetch_signal_json_from_hf() -> dict:
-    token = os.environ.get("HF_TOKEN")
-    try:
-        path = hf_hub_download(
-            repo_id=HF_DATASET_OUT,
-            filename="results/signature_signal.json",
-            repo_type="dataset",
-            token=token, force_download=True,
-        )
-        with open(path) as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"  [info] No existing signal JSON on HF ({e}). Starting fresh.")
-        return {}
-
 
 def _load_prev_pick_from_hf(csv_filename: str, col: str = "pick_full") -> str | None:
     token = os.environ.get("HF_TOKEN")
