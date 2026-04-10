@@ -24,21 +24,34 @@ jobs:
           - module: equity
             script: train_equity
             output: equity_signal.json
-    
-    if: |
-      github.event_name == 'schedule' ||
-      github.event.inputs.module == matrix.module ||
-      github.event.inputs.module == 'both'
 
     steps:
+      - name: Check if should run
+        id: check
+        run: |
+          MODULE="${{ matrix.module }}"
+          INPUT="${{ github.event.inputs.module }}"
+          EVENT="${{ github.event_name }}"
+          
+          if [ "$EVENT" == "schedule" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          elif [ "$INPUT" == "$MODULE" ] || [ "$INPUT" == "both" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.check.outputs.should_run == 'true'
 
       - name: Set up Python 3.11
+        if: steps.check.outputs.should_run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Cache pip
+        if: steps.check.outputs.should_run == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -47,18 +60,21 @@ jobs:
             ${{ runner.os }}-pip-sig-
 
       - name: Install dependencies
+        if: steps.check.outputs.should_run == 'true'
         run: |
           pip install numpy setuptools wheel
           pip install --no-build-isolation iisignature==0.24
           pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
 
       - name: Train ${{ matrix.module }} module
+        if: steps.check.outputs.should_run == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OUTPUT_JSON: ${{ matrix.output }}
         run: python ${{ matrix.script }}.py
 
       - name: Upload ${{ matrix.module }} artifact
+        if: steps.check.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
@@ -103,19 +119,25 @@ jobs:
           from huggingface_hub import HfApi
           
           # Load separate signals
-          with open('./signals/fi_signal.json') as f:
-              fi_data = json.load(f)
-          with open('./signals/equity_signal.json') as f:
-              eq_data = json.load(f)
+          merged = {}
           
-          # Merge into final structure
-          merged = {
-              "FI_full": fi_data.get("FI_full"),
-              "FI_consensus": fi_data.get("FI_consensus"),
-              "EQ_full": eq_data.get("EQ_full"),
-              "EQ_consensus": eq_data.get("EQ_consensus"),
-              "generated_at": datetime.datetime.utcnow().isoformat()
-          }
+          try:
+              with open('./signals/fi_signal.json') as f:
+                  fi_data = json.load(f)
+                  merged["FI_full"] = fi_data.get("FI_full")
+                  merged["FI_consensus"] = fi_data.get("FI_consensus")
+          except Exception as e:
+              print(f"FI signal not found: {e}")
+          
+          try:
+              with open('./signals/equity_signal.json') as f:
+                  eq_data = json.load(f)
+                  merged["EQ_full"] = eq_data.get("EQ_full")
+                  merged["EQ_consensus"] = eq_data.get("EQ_consensus")
+          except Exception as e:
+              print(f"Equity signal not found: {e}")
+          
+          merged["generated_at"] = datetime.datetime.utcnow().isoformat()
           
           # Save locally
           with open('signature_signal.json', 'w') as f:
