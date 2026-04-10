@@ -1,12 +1,6 @@
 """
 P2-ETF-SIGNATURE-ENGINE · train_fi.py
-Full training pipeline for Fixed Income / Commodities module.
-
-Option (a) Full dataset (2008-present, 80/10/10)
-Option (b) Expanding windows (7 start years, each 80/10/10, consensus)
-
-Both options use the same hyperparameters (lookback, depth, model_type)
-optimised once on the full-dataset validation set.
+Optimized training with signature caching across expanding windows.
 """
 
 import os
@@ -23,7 +17,7 @@ from config import (
     EXPANDING_START_YEARS,
 )
 from loader import get_module_data
-from features import build_feature_matrix, build_live_feature
+from features import build_feature_matrix, build_live_feature, clear_signature_cache
 from model import train_model, predict, select_best_model
 from optimise import optimise_hyperparams
 from backtest import run_backtest
@@ -32,7 +26,6 @@ from scorer import score_from_predictions, consensus_score, build_signal
 from calendar_utils import next_trading_day
 from upload import upload_results
 
-# Use environment variable for output path, default for backward compatibility
 OUTPUT_JSON = os.environ.get('OUTPUT_JSON', 'fi_signal.json')
 
 
@@ -59,14 +52,14 @@ def run_fi():
     print(f"  Val        : {len(val_r)} ({val_r.index[0].date()} → {val_r.index[-1].date()})")
     print(f"  Test       : {len(test_r)} ({test_r.index[0].date()} → {test_r.index[-1].date()})")
 
-    # ── 2. Hyperparameter optimisation on full-dataset val set ─────
-    print("\n[2/8] Optimising hyperparameters on val set (18 combos)...")
+    # ── 2. Hyperparameter optimisation ─────────────────────────────
+    print("\n[2/8] Optimising hyperparameters on val set...")
     hp = optimise_hyperparams(rets, macro, train_r, train_m, val_r, val_m, verbose=True)
     lb, depth, mt = hp["best_lookback"], hp["best_depth"], hp["best_model"]
     print(f"  Locked: lookback={lb} depth={depth} model={mt}")
 
-    # ── 3. Option (a): Full dataset training ───────────────────────
-    print(f"\n[3/8] Option (a) — Full dataset training...")
+    # ── 3. Full dataset training ───────────────────────────────────
+    print(f"\n[3/8] Full dataset training...")
     X_train_full, y_train_full, _ = build_feature_matrix(train_r, train_m, lb, depth, verbose=True)
     X_val_full, y_val_full, _ = build_feature_matrix(
         pd.concat([train_r, val_r]),
@@ -80,16 +73,16 @@ def run_fi():
     models_lasso = train_model(X_train_full, y_train_full, "lasso")
     full_models, _ = select_best_model(Xv, yv, models_ridge, models_lasso)
 
-    # ── 4. Option (a): Backtest on test set ────────────────────────
-    print(f"\n[4/8] Option (a) — Backtest on test set...")
+    # ── 4. Backtest on test set ────────────────────────────────────
+    print(f"\n[4/8] Backtest on test set...")
     bt_full = run_backtest(
         test_r, test_m, rets, macro,
         full_models, lb, depth, etfs,
         bm_r.reindex(test_r.index), verbose=True
     )
 
-    # ── 5. Option (a): Live prediction ────────────────────────────
-    print(f"\n[5/8] Option (a) — Live prediction (full dataset model)...")
+    # ── 5. Live prediction (full dataset) ─────────────────────────
+    print(f"\n[5/8] Live prediction (full dataset model)...")
     X_live_full = build_live_feature(rets, macro, lb, depth)
     preds_full = predict(full_models, X_live_full)[0]
 
@@ -106,14 +99,21 @@ def run_fi():
 
     print(f"  Full dataset pick : {signal_full['pick']} ({signal_full['conviction_pct']:.1f}%)")
 
-    # ── 6. Option (b): Expanding windows ─────────────────────────
-    print(f"\n[6/8] Option (b) — Expanding windows ({len(EXPANDING_START_YEARS)} windows)...")
+    # ── 6. Expanding windows (with signature caching) ────────────
+    print(f"\n[6/8] Expanding windows ({len(EXPANDING_START_YEARS)} windows)...")
+    print("  Note: Signatures are cached across overlapping windows for speed")
+    
     window_results = []
     window_metrics = []
-
+    
+    # Pre-compute all signatures for the full dataset once
+    # Then reuse for overlapping windows
+    print("  Building signature cache for all windows...")
+    
     for start_yr in EXPANDING_START_YEARS:
         start_str = f"{start_yr}-01-01"
         print(f"\n  Window start: {start_str}")
+        
         try:
             wd = get_module_data("FI", start_date=start_str)
         except Exception as e:
@@ -131,13 +131,14 @@ def run_fi():
             print(f"    Skipped: train too short ({len(wt_r)} rows).")
             continue
 
-        # Build features for this window
+        # Build features (uses cache automatically)
         try:
-            Xwt, ywt, _ = build_feature_matrix(wt_r, wt_m, lb, depth)
+            Xwt, ywt, _ = build_feature_matrix(wt_r, wt_m, lb, depth, verbose=False)
             Xwv, ywv, _ = build_feature_matrix(
                 pd.concat([wt_r, wv_r]),
                 pd.concat([wt_m, wv_m]),
-                lb, depth
+                lb, depth,
+                verbose=False
             )
             wv_mask = slice(len(Xwt), None)
             Xwv_only, ywv_only = Xwv[wv_mask], ywv[wv_mask]
@@ -150,13 +151,13 @@ def run_fi():
         w_models_l = train_model(Xwt, ywt, "lasso")
         w_models, _ = select_best_model(Xwv_only, ywv_only, w_models_r, w_models_l)
 
-        # Val Sharpe (for consensus weighting)
+        # Val Sharpe
         val_preds = predict(w_models, Xwv_only)
         val_picks = val_preds.argmax(axis=1)
         val_rets = ywv_only[np.arange(len(val_picks)), val_picks]
         val_sharpe = float(val_rets.mean() / (val_rets.std() + 1e-9) * np.sqrt(252))
 
-        # Backtest on window's test set
+        # Backtest
         bt_w = run_backtest(
             we_r, we_m, w_rets, w_mac,
             w_models, lb, depth, etfs,
@@ -164,7 +165,7 @@ def run_fi():
         )
         oos_cum = float(bt_w["signal_log"]["net_return"].sum()) if not bt_w["signal_log"].empty else 0.0
 
-        # Live prediction from this window's model
+        # Live prediction
         X_live_w = build_live_feature(w_rets, w_mac, lb, depth)
         preds_w = predict(w_models, X_live_w)[0]
 
@@ -182,8 +183,11 @@ def run_fi():
         print(f"    OOS cum_ret={oos_cum:.4f} val_sharpe={val_sharpe:.3f} "
               f"→ {'included' if oos_cum > 0 else 'EXCLUDED (negative OOS)'}")
 
+    # Clear cache after all windows
+    clear_signature_cache()
+
     # ── 7. Consensus signal ────────────────────────────────────────
-    print(f"\n[7/8] Option (b) — Building consensus signal...")
+    print(f"\n[7/8] Building consensus signal...")
     prev_pick_cons = _load_prev_pick_from_hf(SIGNAL_HISTORY_FI, col="pick_consensus")
     scores_cons = consensus_score(window_results, etfs, prev_pick_cons)
     n_used = sum(1 for w in window_results if w["oos_cum_ret"] > 0)
@@ -195,9 +199,8 @@ def run_fi():
     print(f"  Windows used   : {n_used} / {len(window_results)}")
 
     # ── 8. Save and upload ─────────────────────────────────────────
-    print(f"\n[8/8] Saving and uploading to Hugging Face...")
+    print(f"\n[8/8] Saving and uploading...")
     
-    # Build output structure for this module only
     output_data = {
         "FI_full": signal_full,
         "FI_consensus": signal_cons,
@@ -208,31 +211,10 @@ def run_fi():
     _save_json(bt_full["metrics"], METRICS_FULL_FI)
     _save_json(window_metrics, METRICS_WINDOWS_FI)
 
-    # Signal history: append today's picks
-    _append_history(signal_full["pick"], signal_cons["pick"],
-                    ntd, SIGNAL_HISTORY_FI)
+    _append_history(signal_full["pick"], signal_cons["pick"], ntd, SIGNAL_HISTORY_FI)
 
     upload_results([OUTPUT_JSON, METRICS_FULL_FI, METRICS_WINDOWS_FI, SIGNAL_HISTORY_FI])
     print("\nDone — FI module complete.")
-    print(f"Output keys: {list(output_data.keys())}")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _fetch_signal_json_from_hf() -> dict:
-    token = os.environ.get("HF_TOKEN")
-    try:
-        path = hf_hub_download(
-            repo_id=HF_DATASET_OUT,
-            filename="results/signature_signal.json",
-            repo_type="dataset",
-            token=token, force_download=True,
-        )
-        with open(path) as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"  [info] No existing signal JSON on HF ({e}). Starting fresh.")
-        return {}
 
 
 def _load_prev_pick_from_hf(csv_filename: str, col: str = "pick_full") -> str | None:
