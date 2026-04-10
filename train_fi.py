@@ -9,13 +9,15 @@ Both options use the same hyperparameters (lookback, depth, model_type)
 optimised once on the full-dataset validation set.
 """
 
-import os, json, datetime
+import os
+import json
+import datetime
 import numpy as np
 import pandas as pd
 from huggingface_hub import hf_hub_download
 
 from config import (
-    HF_DATASET_OUT, OUTPUT_JSON,
+    HF_DATASET_OUT,
     SIGNAL_HISTORY_FI,
     METRICS_FULL_FI, METRICS_WINDOWS_FI,
     EXPANDING_START_YEARS,
@@ -29,6 +31,9 @@ from regime import fit_regime_model, predict_regime
 from scorer import score_from_predictions, consensus_score, build_signal
 from calendar_utils import next_trading_day
 from upload import upload_results
+
+# Use environment variable for output path, default for backward compatibility
+OUTPUT_JSON = os.environ.get('OUTPUT_JSON', 'fi_signal.json')
 
 
 def run_fi():
@@ -146,7 +151,7 @@ def run_fi():
         w_models, _ = select_best_model(Xwv_only, ywv_only, w_models_r, w_models_l)
 
         # Val Sharpe (for consensus weighting)
-        val_preds = predict(w_models, Xwv_only)  # (N_val, n_etfs)
+        val_preds = predict(w_models, Xwv_only)
         val_picks = val_preds.argmax(axis=1)
         val_rets = ywv_only[np.arange(len(val_picks)), val_picks]
         val_sharpe = float(val_rets.mean() / (val_rets.std() + 1e-9) * np.sqrt(252))
@@ -191,12 +196,15 @@ def run_fi():
 
     # ── 8. Save and upload ─────────────────────────────────────────
     print(f"\n[8/8] Saving and uploading to Hugging Face...")
-    existing = _fetch_signal_json_from_hf()
-    existing["FI_full"] = signal_full
-    existing["FI_consensus"] = signal_cons
-    existing["generated_at"] = datetime.datetime.utcnow().isoformat()
-    _save_json(existing, OUTPUT_JSON)
-
+    
+    # Build output structure for this module only
+    output_data = {
+        "FI_full": signal_full,
+        "FI_consensus": signal_cons,
+        "generated_at": datetime.datetime.utcnow().isoformat()
+    }
+    
+    _save_json(output_data, OUTPUT_JSON)
     _save_json(bt_full["metrics"], METRICS_FULL_FI)
     _save_json(window_metrics, METRICS_WINDOWS_FI)
 
@@ -206,7 +214,7 @@ def run_fi():
 
     upload_results([OUTPUT_JSON, METRICS_FULL_FI, METRICS_WINDOWS_FI, SIGNAL_HISTORY_FI])
     print("\nDone — FI module complete.")
-    print(f"Signal JSON keys: {list(existing.keys())}")
+    print(f"Output keys: {list(output_data.keys())}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
