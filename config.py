@@ -1,6 +1,6 @@
 """
-P2-ETF-SIGNATURE-ENGINE  ·  config.py
-All constants, ETF universes, and hyperparameters.
+P2-ETF-SIGNATURE-ENGINE · config.py
+Reduced constants for memory-constrained GitHub Actions runners.
 """
 
 # ── Hugging Face ──────────────────────────────────────────────────────────────
@@ -27,22 +27,23 @@ TRAIN_RATIO = 0.80
 VAL_RATIO   = 0.10
 # test = remaining 0.10
 
-# ── Hyperparameter grid (optimised on val set of full-dataset run) ────────────
-LOOKBACK_CANDIDATES = [30, 45, 60]      # rolling window in trading days
-DEPTH_CANDIDATES    = [2, 3, 4]         # signature truncation depth
-MODEL_CANDIDATES    = ["ridge", "lasso"] # linear model type
+# ── REDUCED Hyperparameter grid for memory-constrained environments ───────────
+# Reduced from [30, 45, 60] to [30, 45] to save memory
+LOOKBACK_CANDIDATES = [30, 45]      # Removed 60 (saves 1/3 of combinations)
+# Reduced from [2, 3, 4] to [2, 3] - depth 4 creates very large feature vectors
+DEPTH_CANDIDATES    = [2, 3]         # Removed 4 (depth 4 signatures are memory-intensive)
+# Using only ridge for now - lasso can be added back once memory is stable
+MODEL_CANDIDATES    = ["ridge"]      # Removed lasso temporarily
 
-# ── Expanding windows (option b) — all end at latest available date ───────────
-EXPANDING_START_YEARS = [2008, 2010, 2012, 2014, 2016, 2018, 2020]
+# ── REDUCED Expanding windows ─────────────────────────────────────────────────
+# Reduced from 7 windows to 4 windows to minimize memory usage
+EXPANDING_START_YEARS = [2012, 2016, 2019, 2021]  # 4 windows instead of 7
 
-# ── Consensus scoring weights (expanding windows) ────────────────────────────
-# Each window's vote is weighted by its val-set Sharpe ratio (floored at 0)
-# Negative-return windows are excluded from the consensus entirely
-CONSENSUS_MIN_RETURN = 0.0   # exclude windows with OOS cumulative return <= this
+# ── Consensus scoring weights ───────────────────────────────────────────────
+CONSENSUS_MIN_RETURN = 0.0
 
-# ── Ridge / Lasso settings ────────────────────────────────────────────────────
-RIDGE_ALPHAS = [0.01, 0.1, 1.0, 10.0, 100.0]   # cross-validated on val set
-LASSO_ALPHAS = [0.0001, 0.001, 0.01, 0.1, 1.0]
+# ── Ridge settings ────────────────────────────────────────────────────────────
+RIDGE_ALPHAS = [0.01, 0.1, 1.0, 10.0, 100.0]
 
 # ── Transaction cost ──────────────────────────────────────────────────────────
 TRANSACTION_COST_BPS = 12
