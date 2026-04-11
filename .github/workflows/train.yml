@@ -13,7 +13,8 @@ on:
 jobs:
   train:
     name: Train ${{ matrix.module }} Module
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Try ubuntu-22.04 for more stability
+    timeout-minutes: 120  # Increase timeout
     strategy:
       fail-fast: false
       matrix:
@@ -55,26 +56,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-sig-v2-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-sig-v3-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-sig-v2-
+            ${{ runner.os }}-pip-sig-v3-
 
       - name: Install dependencies
         if: steps.check.outputs.should_run == 'true'
         run: |
           pip install --upgrade pip
-          
-          # Install numpy first
           pip install numpy setuptools wheel
-          
-          # Install esig (pre-built wheel, works with numpy 2.x)
           pip install esig
-          
-          # Try to install iisignature without build isolation (optional fallback)
-          # If this fails, esig will still work
-          pip install --no-build-isolation iisignature==0.24 || echo "iisignature install failed, using esig only"
-          
-          # Install remaining packages
+          # Skip iisignature to avoid build issues
           pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly tqdm
 
       - name: Train ${{ matrix.module }} module
@@ -82,7 +74,15 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OUTPUT_JSON: ${{ matrix.output }}
-        run: python ${{ matrix.script }}.py
+          # Limit memory usage
+          OPENBLAS_NUM_THREADS: 2
+          MKL_NUM_THREADS: 2
+          OMP_NUM_THREADS: 2
+        run: |
+          # Run with memory profiling to catch issues
+          python -c "import psutil; print(f'Memory before: {psutil.virtual_memory().percent}%')"
+          python ${{ matrix.script }}.py
+          python -c "import psutil; print(f'Memory after: {psutil.virtual_memory().percent}%')"
 
       - name: Upload ${{ matrix.module }} artifact
         if: steps.check.outputs.should_run == 'true'
@@ -91,74 +91,3 @@ jobs:
           name: ${{ matrix.output }}
           path: ${{ matrix.output }}
           retention-days: 1
-
-  merge:
-    name: Merge Signals
-    runs-on: ubuntu-latest
-    needs: train
-    if: always() && (needs.train.result == 'success' || needs.train.result == 'skipped')
-    
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Download FI artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: fi_signal.json
-          path: ./signals/
-
-      - name: Download Equity artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: equity_signal.json
-          path: ./signals/
-
-      - name: Merge and upload
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install huggingface_hub
-          python << 'EOF'
-          import json
-          import os
-          import datetime
-          from huggingface_hub import HfApi
-          
-          merged = {}
-          
-          try:
-              with open('./signals/fi_signal.json') as f:
-                  fi_data = json.load(f)
-                  merged["FI_full"] = fi_data.get("FI_full")
-                  merged["FI_consensus"] = fi_data.get("FI_consensus")
-          except Exception as e:
-              print(f"FI signal not found: {e}")
-          
-          try:
-              with open('./signals/equity_signal.json') as f:
-                  eq_data = json.load(f)
-                  merged["EQ_full"] = eq_data.get("EQ_full")
-                  merged["EQ_consensus"] = eq_data.get("EQ_consensus")
-          except Exception as e:
-              print(f"Equity signal not found: {e}")
-          
-          merged["generated_at"] = datetime.datetime.utcnow().isoformat()
-          
-          with open('signature_signal.json', 'w') as f:
-              json.dump(merged, f, indent=2, default=str)
-          
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          api.upload_file(
-              path_or_fileobj='signature_signal.json',
-              path_in_repo='results/signature_signal.json',
-              repo_id='P2SAMAPA/p2-etf-signature-engine-results',
-              repo_type='dataset'
-          )
-          print("Merged and uploaded successfully")
-          print(f"Keys: {list(merged.keys())}")
-          EOF
