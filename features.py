@@ -1,9 +1,10 @@
 """
 P2-ETF-SIGNATURE-ENGINE · features.py
-Memory-efficient signature feature building with batching.
+Build the rolling-window signature feature matrix with caching.
 """
 
 from __future__ import annotations
+import hashlib
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -32,13 +33,12 @@ def build_feature_matrix(returns_df: pd.DataFrame,
     """
     Build signature feature matrix X and target matrix y with memory-efficient batching.
     """
-    import hashlib
+    import gc
     
     T = len(returns_df)
     n_etfs = returns_df.shape[1]
     dates = []
     
-    # Pre-allocate arrays in batches to avoid memory fragmentation
     all_X = []
     all_y = []
     
@@ -51,14 +51,12 @@ def build_feature_matrix(returns_df: pd.DataFrame,
         mac_win = macro_df.iloc[t - lookback: t]
         mac_win = mac_win.reindex(ret_win.index, method="ffill").fillna(0.0)
 
-        # Check cache with size limit
         cache_key = _get_cache_key(ret_win, mac_win, depth)
         if cache_key in _signature_cache:
             sig = _signature_cache[cache_key]
         else:
             path = build_path(ret_win, mac_win)
             sig = compute_signature(path, depth)
-            # Limit cache size
             if len(_signature_cache) < _MAX_CACHE_SIZE:
                 _signature_cache[cache_key] = sig
 
@@ -69,9 +67,7 @@ def build_feature_matrix(returns_df: pd.DataFrame,
         all_y.append(next_ret)
         dates.append(next_date)
         
-        # Periodic garbage collection every batch
         if len(all_X) % batch_size == 0:
-            import gc
             gc.collect()
 
     if not all_X:
@@ -87,7 +83,9 @@ def build_live_feature(returns_df: pd.DataFrame,
                        macro_df: pd.DataFrame,
                        lookback: int,
                        depth: int) -> np.ndarray:
-    """Build a single signature feature vector from the most recent lookback days."""
+    """
+    Build a single signature feature vector from the most recent lookback days.
+    """
     ret_win = returns_df.iloc[-lookback:]
     mac_win = macro_df.reindex(ret_win.index, method="ffill").fillna(0.0)
     path = build_path(ret_win, mac_win)
