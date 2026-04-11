@@ -1,6 +1,6 @@
 """
 P2-ETF-SIGNATURE-ENGINE · optimise.py
-Optimized grid search with feature pre-computation and model-only iteration.
+Optimized grid search with minimal memory usage.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from config import (
     LOOKBACK_CANDIDATES, DEPTH_CANDIDATES,
     MODEL_CANDIDATES, TRANSACTION_COST_BPS,
 )
-from features import build_feature_matrix, clear_signature_cache
+from features import build_feature_matrix
 from model import train_model, predict
 
 def _val_cumulative_return(X_train, y_train, X_val, y_val, model_type: str) -> float:
@@ -38,8 +38,8 @@ def optimise_hyperparams(returns_df: pd.DataFrame,
                          val_macro: pd.DataFrame,
                          verbose: bool = True) -> dict:
     """
-    Optimized grid search: pre-compute features once per (lb, depth) combo,
-    then test only models.
+    Grid search over (lookback, depth, model_type) on the validation set.
+    Memory-efficient: processes one (lb, depth) combo at a time.
     """
     all_scores = {}
     best_score = -np.inf
@@ -48,37 +48,22 @@ def optimise_hyperparams(returns_df: pd.DataFrame,
     combined_ret = pd.concat([train_returns, val_returns])
     combined_mac = pd.concat([train_macro, val_macro])
 
-    # Pre-compute features for each (lb, depth) combo once
-    feature_cache = {}  # (lb, depth) -> (X_all, y_all, dates)
-    
     n_combos = len(LOOKBACK_CANDIDATES) * len(DEPTH_CANDIDATES) * len(MODEL_CANDIDATES)
     done = 0
 
-    if verbose:
-        print(f"  Pre-computing features for {len(LOOKBACK_CANDIDATES) * len(DEPTH_CANDIDATES)} (lb, depth) combos...")
-
-    for lb in LOOKBACK_CANDIDATES:
-        for depth in DEPTH_CANDIDATES:
-            try:
-                # Build features once per (lb, depth)
-                X_all, y_all, dates = build_feature_matrix(
-                    combined_ret, combined_mac, lb, depth, verbose=False
-                )
-                feature_cache[(lb, depth)] = (X_all, y_all, dates)
-            except Exception as e:
-                print(f"  [optimise] skip lb={lb} d={depth}: {e}")
-                continue
-
-    # Now iterate through all combos using cached features
     if verbose:
         print(f"  Testing {n_combos} combinations...")
 
     for lb in LOOKBACK_CANDIDATES:
         for depth in DEPTH_CANDIDATES:
-            if (lb, depth) not in feature_cache:
+            try:
+                # Build features for this (lb, depth) combo
+                X_all, y_all, dates = build_feature_matrix(
+                    combined_ret, combined_mac, lb, depth, verbose=False
+                )
+            except Exception as e:
+                print(f"  [optimise] skip lb={lb} d={depth}: {e}")
                 continue
-                
-            X_all, y_all, dates = feature_cache[(lb, depth)]
             
             # Split at val boundary
             val_start = val_returns.index[0]
@@ -109,9 +94,10 @@ def optimise_hyperparams(returns_df: pd.DataFrame,
                     print(f"  [optimise] error lb={lb} d={depth} mt={mt}: {e}")
                     continue
 
-    # Clear cache to free memory before expanding windows
-    feature_cache.clear()
-    clear_signature_cache()
+            # Delete features to free memory before next combo
+            del X_all, y_all, X_tr, y_tr, X_v, y_v
+            import gc
+            gc.collect()
 
     if verbose:
         print(f"\n  Best: lookback={best_params['lookback']} "
