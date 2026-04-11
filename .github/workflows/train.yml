@@ -55,17 +55,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-sig-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-sig-esig-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-sig-
+            ${{ runner.os }}-pip-sig-esig-
 
       - name: Install dependencies
         if: steps.check.outputs.should_run == 'true'
         run: |
-          # Pin numpy to 1.x for iisignature compatibility
-          pip install "numpy<2.0" setuptools wheel
-          pip install --no-build-isolation iisignature==0.24
-          pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly
+          pip install --upgrade pip
+          pip install numpy setuptools wheel
+          pip install esig iisignature==0.24
+          pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly tqdm
 
       - name: Train ${{ matrix.module }} module
         if: steps.check.outputs.should_run == 'true'
