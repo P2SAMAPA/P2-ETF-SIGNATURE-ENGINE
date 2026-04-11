@@ -55,16 +55,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-sig-esig-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-sig-v2-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-sig-esig-
+            ${{ runner.os }}-pip-sig-v2-
 
       - name: Install dependencies
         if: steps.check.outputs.should_run == 'true'
         run: |
           pip install --upgrade pip
+          
+          # Install numpy first
           pip install numpy setuptools wheel
-          pip install esig iisignature==0.24
+          
+          # Install esig (pre-built wheel, works with numpy 2.x)
+          pip install esig
+          
+          # Try to install iisignature without build isolation (optional fallback)
+          # If this fails, esig will still work
+          pip install --no-build-isolation iisignature==0.24 || echo "iisignature install failed, using esig only"
+          
+          # Install remaining packages
           pip install datasets==2.20.0 huggingface_hub==0.23.4 pandas scikit-learn scipy streamlit plotly tqdm
 
       - name: Train ${{ matrix.module }} module
