@@ -1,7 +1,9 @@
 # Core dependencies
 numpy>=1.21.0
 esig>=1.0.0
-iisignature==0.24
+
+# Optional fallback (may fail to install on numpy 2.x)
+# iisignature==0.24
 
 # Data and ML
 datasets==2.20.0
