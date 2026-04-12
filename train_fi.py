@@ -1,6 +1,6 @@
 """
 P2-ETF-SIGNATURE-ENGINE · train_fi.py
-Optimized training with signature caching across expanding windows.
+Full training pipeline for Fixed Income / Commodities module.
 """
 
 import os
@@ -11,7 +11,7 @@ import pandas as pd
 from huggingface_hub import hf_hub_download
 
 from config import (
-    HF_DATASET_OUT,
+    HF_DATASET_OUT, MODEL_CANDIDATES,
     SIGNAL_HISTORY_FI,
     METRICS_FULL_FI, METRICS_WINDOWS_FI,
     EXPANDING_START_YEARS,
@@ -70,8 +70,12 @@ def run_fi():
     Xv, yv = X_val_full[val_mask], y_val_full[val_mask]
 
     models_ridge = train_model(X_train_full, y_train_full, "ridge")
-    models_lasso = train_model(X_train_full, y_train_full, "lasso")
-    full_models, _ = select_best_model(Xv, yv, models_ridge, models_lasso)
+    
+    if "lasso" in MODEL_CANDIDATES:
+        models_lasso = train_model(X_train_full, y_train_full, "lasso")
+        full_models, _ = select_best_model(Xv, yv, models_ridge, models_lasso)
+    else:
+        full_models, _ = select_best_model(Xv, yv, models_ridge, None)
 
     # ── 4. Backtest on test set ────────────────────────────────────
     print(f"\n[4/8] Backtest on test set...")
@@ -81,8 +85,8 @@ def run_fi():
         bm_r.reindex(test_r.index), verbose=True
     )
 
-    # ── 5. Live prediction (full dataset) ─────────────────────────
-    print(f"\n[5/8] Live prediction (full dataset model)...")
+    # ── 5. Live prediction ────────────────────────────
+    print(f"\n[5/8] Live prediction...")
     X_live_full = build_live_feature(rets, macro, lb, depth)
     preds_full = predict(full_models, X_live_full)[0]
 
@@ -99,17 +103,11 @@ def run_fi():
 
     print(f"  Full dataset pick : {signal_full['pick']} ({signal_full['conviction_pct']:.1f}%)")
 
-    # ── 6. Expanding windows (with signature caching) ────────────
+    # ── 6. Expanding windows ─────────────────────────
     print(f"\n[6/8] Expanding windows ({len(EXPANDING_START_YEARS)} windows)...")
-    print("  Note: Signatures are cached across overlapping windows for speed")
-    
     window_results = []
     window_metrics = []
-    
-    # Pre-compute all signatures for the full dataset once
-    # Then reuse for overlapping windows
-    print("  Building signature cache for all windows...")
-    
+
     for start_yr in EXPANDING_START_YEARS:
         start_str = f"{start_yr}-01-01"
         print(f"\n  Window start: {start_str}")
@@ -131,7 +129,6 @@ def run_fi():
             print(f"    Skipped: train too short ({len(wt_r)} rows).")
             continue
 
-        # Build features (uses cache automatically)
         try:
             Xwt, ywt, _ = build_feature_matrix(wt_r, wt_m, lb, depth, verbose=False)
             Xwv, ywv, _ = build_feature_matrix(
@@ -146,18 +143,19 @@ def run_fi():
             print(f"    Feature build failed: {e}")
             continue
 
-        # Train models
         w_models_r = train_model(Xwt, ywt, "ridge")
-        w_models_l = train_model(Xwt, ywt, "lasso")
-        w_models, _ = select_best_model(Xwv_only, ywv_only, w_models_r, w_models_l)
+        
+        if "lasso" in MODEL_CANDIDATES:
+            w_models_l = train_model(Xwt, ywt, "lasso")
+            w_models, _ = select_best_model(Xwv_only, ywv_only, w_models_r, w_models_l)
+        else:
+            w_models, _ = select_best_model(Xwv_only, ywv_only, w_models_r, None)
 
-        # Val Sharpe
         val_preds = predict(w_models, Xwv_only)
         val_picks = val_preds.argmax(axis=1)
         val_rets = ywv_only[np.arange(len(val_picks)), val_picks]
         val_sharpe = float(val_rets.mean() / (val_rets.std() + 1e-9) * np.sqrt(252))
 
-        # Backtest
         bt_w = run_backtest(
             we_r, we_m, w_rets, w_mac,
             w_models, lb, depth, etfs,
@@ -165,7 +163,6 @@ def run_fi():
         )
         oos_cum = float(bt_w["signal_log"]["net_return"].sum()) if not bt_w["signal_log"].empty else 0.0
 
-        # Live prediction
         X_live_w = build_live_feature(w_rets, w_mac, lb, depth)
         preds_w = predict(w_models, X_live_w)[0]
 
@@ -183,7 +180,6 @@ def run_fi():
         print(f"    OOS cum_ret={oos_cum:.4f} val_sharpe={val_sharpe:.3f} "
               f"→ {'included' if oos_cum > 0 else 'EXCLUDED (negative OOS)'}")
 
-    # Clear cache after all windows
     clear_signature_cache()
 
     # ── 7. Consensus signal ────────────────────────────────────────
