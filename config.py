@@ -28,23 +28,19 @@ VAL_RATIO   = 0.10
 # test = remaining 0.10
 
 # ── REDUCED Hyperparameter grid for memory-constrained environments ───────────
-# Reduced from [30, 45, 60] to [30, 45] to save memory
-LOOKBACK_CANDIDATES = [30, 45]      # Removed 60 (saves 1/3 of combinations)
-# Reduced from [2, 3, 4] to [2, 3] - depth 4 creates very large feature vectors
-DEPTH_CANDIDATES    = [2, 3]         # Removed 4 (depth 4 signatures are memory-intensive)
-# Using only ridge for now - lasso can be added back once memory is stable
-MODEL_CANDIDATES    = ["ridge"]      # Removed lasso temporarily
+LOOKBACK_CANDIDATES = [30, 45]      # Removed 60
+DEPTH_CANDIDATES    = [2, 3]        # Removed 4 (memory-intensive)
+MODEL_CANDIDATES    = ["ridge"]     # Removed lasso temporarily
 
 # ── REDUCED Expanding windows ─────────────────────────────────────────────────
-# Reduced from 7 windows to 4 windows to minimize memory usage
 EXPANDING_START_YEARS = [2012, 2016, 2019, 2021]  # 4 windows instead of 7
 
 # ── Consensus scoring weights ───────────────────────────────────────────────
 CONSENSUS_MIN_RETURN = 0.0
 
-# ── Ridge settings ────────────────────────────────────────────────────────────
+# ── Ridge / Lasso settings ───────────────────────────────────────────────────
 RIDGE_ALPHAS = [0.01, 0.1, 1.0, 10.0, 100.0]
-LASSO_ALPHAS = [0.0001, 0.001, 0.01, 0.1, 1.0]
+LASSO_ALPHAS = [0.0001, 0.001, 0.01, 0.1, 1.0]  # Kept for model.py compatibility
 
 # ── Transaction cost ──────────────────────────────────────────────────────────
 TRANSACTION_COST_BPS = 12
