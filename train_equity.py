@@ -1,6 +1,7 @@
 """
 P2-ETF-SIGNATURE-ENGINE · train_equity.py
 Full training pipeline for Equity Sectors module.
+MODIFIED: Uses trained alpha from hyperparameter optimization with stable Ridge.
 """
 
 import os
@@ -15,10 +16,11 @@ from config import (
     SIGNAL_HISTORY_EQ,
     METRICS_FULL_EQ, METRICS_WINDOWS_EQ,
     EXPANDING_START_YEARS,
+    RIDGE_ALPHAS,
 )
 from loader import get_module_data
 from features import build_feature_matrix, build_live_feature, clear_signature_cache
-from model import train_model, predict, select_best_model
+from model import train_model, train_model_with_alpha, predict, select_best_model
 from optimise import optimise_hyperparams
 from backtest import run_backtest
 from regime import fit_regime_model, predict_regime
@@ -56,7 +58,8 @@ def run_equity():
     print("\n[2/8] Optimising hyperparameters on val set...")
     hp = optimise_hyperparams(rets, macro, train_r, train_m, val_r, val_m, verbose=True)
     lb, depth, mt = hp["best_lookback"], hp["best_depth"], hp["best_model"]
-    print(f"  Locked: lookback={lb} depth={depth} model={mt}")
+    best_alpha = hp.get("best_alpha", 1.0)  # Get best alpha if available
+    print(f"  Locked: lookback={lb} depth={depth} model={mt} alpha={best_alpha}")
 
     # ── 3. Full dataset training ───────────────────────────────────
     print(f"\n[3/8] Full dataset training...")
@@ -69,7 +72,11 @@ def run_equity():
     val_mask = slice(len(X_train_full), None)
     Xv, yv = X_val_full[val_mask], y_val_full[val_mask]
 
-    models_ridge = train_model(X_train_full, y_train_full, "ridge")
+    # Use train_model_with_alpha with the best alpha found
+    if mt == "ridge":
+        models_ridge = train_model_with_alpha(X_train_full, y_train_full, best_alpha, "ridge")
+    else:
+        models_ridge = train_model(X_train_full, y_train_full, "ridge")
     
     if "lasso" in MODEL_CANDIDATES:
         models_lasso = train_model(X_train_full, y_train_full, "lasso")
@@ -143,7 +150,11 @@ def run_equity():
             print(f"    Feature build failed: {e}")
             continue
 
-        w_models_r = train_model(Xwt, ywt, "ridge")
+        # Use best alpha from hyperparameter optimization
+        if mt == "ridge":
+            w_models_r = train_model_with_alpha(Xwt, ywt, best_alpha, "ridge")
+        else:
+            w_models_r = train_model(Xwt, ywt, "ridge")
         
         if "lasso" in MODEL_CANDIDATES:
             w_models_l = train_model(Xwt, ywt, "lasso")
