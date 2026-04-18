@@ -10,7 +10,7 @@ HF_DATASET_OUT = "P2SAMAPA/p2-etf-signature-engine-results"
 # ── ETF universes ─────────────────────────────────────────────────────────────
 FI_ETFS     = ["TLT", "LQD", "HYG", "VNQ", "GLD", "SLV", "VCIT"]
 EQUITY_ETFS = ["QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLY",
-               "XLP", "XLU", "GDX", "XME", "IWM"]
+               "XLP", "XLU", "GDX", "XME", "IWF", "XSD", "XBI", "IWM"]
 
 BENCHMARK_FI     = "AGG"
 BENCHMARK_EQUITY = "SPY"
